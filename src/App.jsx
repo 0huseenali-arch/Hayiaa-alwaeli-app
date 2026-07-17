@@ -301,6 +301,36 @@ function parseTimeStr(t) {
   return [h, m];
 }
 
+const PRAYER_SEQUENCE = [["Fajr", "الفجر"], ["Dhuhr", "الظهر"], ["Asr", "العصر"], ["Maghrib", "المغرب"], ["Isha", "العشاء"]];
+
+// يحدد الصلاة القادمة الوحيدة (بدل عرض عدادات منفصلة لكل صلاة) — يعيد فحص
+// نفسه كل 30 ثانية عشان ينتقل تلقائياً للصلاة التالية بمجرد ما يدخل وقتها.
+function useNextPrayer(timings) {
+  const [next, setNext] = useState(null);
+  useEffect(() => {
+    if (!timings) { setNext(null); return; }
+    const compute = () => {
+      const now = new Date();
+      let found = null;
+      for (const [key, label] of PRAYER_SEQUENCE) {
+        const [h, m] = parseTimeStr(timings[key]);
+        if (h == null) continue;
+        const t = new Date(); t.setHours(h, m, 0, 0);
+        if (t > now) { found = { key, label, h, m }; break; }
+      }
+      if (!found) {
+        const [h, m] = parseTimeStr(timings.Fajr);
+        found = { key: "Fajr", label: "الفجر", h, m };
+      }
+      setNext(found);
+    };
+    compute();
+    const id = setInterval(compute, 30000);
+    return () => clearInterval(id);
+  }, [timings]);
+  return next;
+}
+
 /* ---------------------------- عناصر بصرية ---------------------------- */
 
 function CompassMark({ size = 260, className = "", spin = false }) {
@@ -520,12 +550,8 @@ function Sidebar({ open, onClose, active, setActive }) {
 
 function HomeView({ gregorian, hijri, posts, goTo, quote, todayEvent, weekdayZiyarat, adhkar, prayerData }) {
   const [rail, setRail] = useState("deeds");
-  const [fh, fm] = parseTimeStr(prayerData.timings && prayerData.timings.Fajr);
-  const [dh, dm] = parseTimeStr(prayerData.timings && prayerData.timings.Dhuhr);
-  const [mh, mm2] = parseTimeStr(prayerData.timings && prayerData.timings.Maghrib);
-  const fajr = useCountdown(fh, fm);
-  const dhuhr = useCountdown(dh, dm);
-  const maghrib = useCountdown(mh, mm2);
+  const nextPrayer = useNextPrayer(prayerData.timings);
+  const countdown = useCountdown(nextPrayer && nextPrayer.h, nextPrayer && nextPrayer.m);
   const latest = posts.slice(0, 2);
 
   return (
@@ -538,14 +564,20 @@ function HomeView({ gregorian, hijri, posts, goTo, quote, todayEvent, weekdayZiy
           <div className="text-[11px] tracking-[0.3em] mt-1" style={{ color: "#C6A15B" }}>ثقافية — توعوية</div>
           <div className="text-xs mt-3" style={{ color: "#8FA396" }}>{hijri} · {gregorian}</div>
 
-          <div className="w-full grid grid-cols-3 gap-2 mt-5">
-            {prayerData.status === "ready" ? [["الفجر", fajr], ["الظهر", dhuhr], ["المغرب", maghrib]].map(([label, val]) => (
-              <div key={label} className="rounded-2xl px-2 py-3 text-center" style={{ background: "#0000002e", border: "1px solid #C6A15B33" }}>
-                <div className="text-[10px]" style={{ color: "#8FA396" }}>{label}</div>
-                <div style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 16, color: "#E3C078" }}>{val}</div>
+          <div className="w-full mt-5">
+            {prayerData.status === "ready" && nextPrayer ? (
+              <div className="rounded-2xl px-4 py-3 flex items-center justify-between" style={{ background: "#0000002e", border: "1px solid #C6A15B33" }}>
+                <div>
+                  <div className="text-[10px]" style={{ color: "#8FA396" }}>الصلاة القادمة</div>
+                  <div style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 18, color: "#F3EEDF" }}>{nextPrayer.label}</div>
+                </div>
+                <div className="text-left">
+                  <div className="text-[10px]" style={{ color: "#8FA396" }}>الوقت المتبقي</div>
+                  <div style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 22, color: "#E3C078" }}>{countdown}</div>
+                </div>
               </div>
-            )) : (
-              <div className="col-span-3 rounded-2xl px-3 py-3 text-center text-[11px]" style={{ background: "#0000002e", border: "1px solid #C6A15B33", color: "#8FA396" }}>
+            ) : (
+              <div className="rounded-2xl px-3 py-3 text-center text-[11px]" style={{ background: "#0000002e", border: "1px solid #C6A15B33", color: "#8FA396" }}>
                 {prayerData.status === "denied" ? "فعّل إذن الموقع لعرض مواقيت الصلاة" : prayerData.status === "unsupported" ? "المتصفح لا يدعم تحديد الموقع" : "جاري تحديد موقعك لحساب المواقيت..."}
               </div>
             )}
@@ -661,7 +693,6 @@ function PostsView({ posts, setPosts, isAdmin }) {
           </Card>
         ))}
       </div>
-      {!isAdmin && <AdminGate />}
     </div>
   );
 }
@@ -890,10 +921,8 @@ function PrayersView({ prayerData }) {
     { id: "isha", label: "العشاء", time: t.Isha },
   ] : [];
   const doneCount = Object.values(done).filter(Boolean).length;
-  const [fh, fm] = parseTimeStr(t && t.Fajr);
-  const [dh, dm] = parseTimeStr(t && t.Dhuhr);
-  const [mh, mm2] = parseTimeStr(t && t.Maghrib);
-  const fajr = useCountdown(fh, fm), dhuhr = useCountdown(dh, dm), maghrib = useCountdown(mh, mm2);
+  const nextPrayer = useNextPrayer(t);
+  const countdown = useCountdown(nextPrayer && nextPrayer.h, nextPrayer && nextPrayer.m);
   return (
     <div className="px-4 pb-10 pt-2 space-y-5">
       <SectionTitle eyebrow="اليوم" title="متتبع الصلوات" icon={Clock} />
@@ -901,11 +930,12 @@ function PrayersView({ prayerData }) {
         <Card><p className="text-xs" style={{ color: "#8FA396" }}>{prayerData.status === "denied" ? "فعّل إذن الموقع لعرض مواقيت الصلاة الحقيقية." : prayerData.status === "unsupported" ? "المتصفح لا يدعم تحديد الموقع." : "جاري تحديد موقعك لحساب المواقيت..."}</p></Card>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-2">
-            {[["الفجر", fajr], ["الظهر", dhuhr], ["المغرب", maghrib]].map(([l, v]) => (
-              <Card key={l} className="!p-3 text-center"><div className="text-[10px]" style={{ color: "#8FA396" }}>{l}</div><div style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 15, color: "#E3C078" }}>{v}</div></Card>
-            ))}
-          </div>
+          {nextPrayer && (
+            <Card className="flex items-center justify-between">
+              <div><div className="text-[10px]" style={{ color: "#8FA396" }}>الصلاة القادمة</div><div style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 17, color: "#F3EEDF" }}>{nextPrayer.label}</div></div>
+              <div style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 20, color: "#E3C078" }}>{countdown}</div>
+            </Card>
+          )}
           <Card>
             <div className="flex items-center justify-between mb-2"><span className="text-sm" style={{ color: "#B7C4BB" }}>إنجاز اليوم</span><span style={{ color: "#E3C078", fontFamily: "'Aref Ruqaa', serif" }}>{doneCount} / 5</span></div>
             <div className="w-full h-2 rounded-full" style={{ background: "#17261E" }}><div className="h-2 rounded-full" style={{ width: `${(doneCount / 5) * 100}%`, background: "linear-gradient(90deg,#1F6B45,#C6A15B)" }} /></div>
@@ -930,12 +960,26 @@ function QiblaView({ prayerData }) {
   const [heading, setHeading] = useState(null);
   const [needsPermission, setNeedsPermission] = useState(false);
   const [status, setStatus] = useState("idle");
+  const usingAbsoluteRef = useRef(false);
 
-  const handleOrientation = (e) => {
-    let h = null;
-    if (typeof e.webkitCompassHeading === "number") h = e.webkitCompassHeading;
-    else if (e.absolute && typeof e.alpha === "number") h = 360 - e.alpha;
-    else if (typeof e.alpha === "number") h = 360 - e.alpha;
+  const computeHeading = (e) => {
+    if (typeof e.webkitCompassHeading === "number") return e.webkitCompassHeading; // سفاري iOS يرجع الاتجاه جاهز مرجعه الشمال
+    if (typeof e.alpha !== "number") return null;
+    const screenAngle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    let h = 360 - e.alpha - screenAngle;
+    return ((h % 360) + 360) % 360;
+  };
+
+  const handleAbsolute = (e) => {
+    usingAbsoluteRef.current = true;
+    const h = computeHeading(e);
+    if (h !== null) setHeading(h);
+  };
+  const handleRelative = (e) => {
+    // نتجاهل القراءة النسبية إذا صارت عندنا قراءة مطلقة (مرجعها الشمال) أدق منها،
+    // لأن استخدام الاثنين سوا يسبب قفزات وقراءات غلط بالبوصلة
+    if (usingAbsoluteRef.current) return;
+    const h = computeHeading(e);
     if (h !== null) setHeading(h);
   };
 
@@ -946,8 +990,8 @@ function QiblaView({ prayerData }) {
         const res = await DeviceOrientationEvent.requestPermission();
         if (res !== "granted") { setStatus("denied"); return; }
       }
-      window.addEventListener("deviceorientationabsolute", handleOrientation, true);
-      window.addEventListener("deviceorientation", handleOrientation, true);
+      window.addEventListener("deviceorientationabsolute", handleAbsolute, true);
+      window.addEventListener("deviceorientation", handleRelative, true);
       setStatus("active");
     } catch (e) {
       setStatus("error");
@@ -959,8 +1003,8 @@ function QiblaView({ prayerData }) {
     setNeedsPermission(isIOS);
     if (!isIOS) start();
     return () => {
-      window.removeEventListener("deviceorientationabsolute", handleOrientation, true);
-      window.removeEventListener("deviceorientation", handleOrientation, true);
+      window.removeEventListener("deviceorientationabsolute", handleAbsolute, true);
+      window.removeEventListener("deviceorientation", handleRelative, true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1083,7 +1127,53 @@ function NotebookView() {
 /* --------------------------------- عداد الخطى --------------------------------- */
 
 function StepsView() {
-  const [steps, setSteps] = useState(2450);
+  const [steps, setSteps] = useState(0);
+  const [status, setStatus] = useState("idle");
+  const [needsPermission, setNeedsPermission] = useState(false);
+  const lastStepTime = useRef(0);
+  const wasAbove = useRef(false);
+
+  const handleMotion = (e) => {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    const magnitude = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+    const now = Date.now();
+    const THRESHOLD = 12.5;
+    if (magnitude > THRESHOLD && !wasAbove.current && now - lastStepTime.current > 300) {
+      wasAbove.current = true;
+      lastStepTime.current = now;
+      setSteps((s) => s + 1);
+    } else if (magnitude < THRESHOLD - 1.5) {
+      wasAbove.current = false;
+    }
+  };
+
+  const start = async () => {
+    setStatus("requesting");
+    try {
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+        const res = await DeviceMotionEvent.requestPermission();
+        if (res !== "granted") { setStatus("denied"); return; }
+      }
+      window.addEventListener("devicemotion", handleMotion, true);
+      setStatus("active");
+    } catch (e) {
+      setStatus("error");
+    }
+  };
+
+  const stop = () => {
+    window.removeEventListener("devicemotion", handleMotion, true);
+    setStatus("idle");
+  };
+
+  useEffect(() => {
+    const isIOS = typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function";
+    setNeedsPermission(isIOS);
+    return () => window.removeEventListener("devicemotion", handleMotion, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="px-4 pb-10 pt-2 space-y-5">
       <SectionTitle eyebrow="طريق الجنة" title="عداد خطى المشاية" icon={Footprints} />
@@ -1091,7 +1181,15 @@ function StepsView() {
         <div className="w-56 h-56 rounded-full flex items-center justify-center" style={{ background: `conic-gradient(#C6A15B ${Math.min((steps / 10000) * 360, 360)}deg, #17261E 0deg)`, padding: 10 }}>
           <div className="w-full h-full rounded-full flex flex-col items-center justify-center" style={{ background: "#0A1310" }}><span style={{ fontFamily: "'Aref Ruqaa', serif", fontSize: 34, color: "#F3EEDF" }}>{steps.toLocaleString("ar")}</span><span className="text-xs mt-1" style={{ color: "#8FA396" }}>خطوة من أصل 10,000</span></div>
         </div>
-        <button onClick={() => setSteps((s) => s + 250)} className="mt-6 px-5 py-2 rounded-xl text-sm" style={{ background: "#1F6B45", color: "#F3EEDF" }}>محاكاة المشي (+250)</button>
+
+        {status !== "active" ? (
+          <button onClick={start} className="mt-6 px-5 py-2.5 rounded-xl text-sm flex items-center gap-2" style={{ background: "#C6A15B", color: "#0A1310", fontWeight: 700 }}><Footprints size={15} /> بدء العد بحساس الحركة</button>
+        ) : (
+          <button onClick={stop} className="mt-6 px-5 py-2.5 rounded-xl text-sm" style={{ background: "#A6402F", color: "#F3EEDF" }}>إيقاف العد</button>
+        )}
+        {status === "denied" && <p className="text-xs mt-3" style={{ color: "#E3866A" }}>تم رفض إذن حساس الحركة من إعدادات المتصفح.</p>}
+        {status === "active" && <p className="text-[11px] mt-3 text-center leading-6" style={{ color: "#8FA396" }}>يستخدم حساس التسارع الحقيقي بجهازك — ضع الهاتف بجيبك وامشِ، الدقة تقريبية وتختلف حسب الجهاز.</p>}
+        {!needsPermission && status === "idle" && <p className="text-[11px] mt-3 text-center" style={{ color: "#5C6B60" }}>يحتاج هذا القسم متصفح جوال يدعم حساس الحركة.</p>}
       </div>
     </div>
   );
@@ -1162,15 +1260,13 @@ function MediaView({ isAdmin }) {
     <div className="px-4 pb-10 pt-2 space-y-5">
       <SectionTitle eyebrow="تحميل" title="خلفيات ونغمات" icon={ImageIcon} />
 
-      {isAdmin ? (
+      {isAdmin && (
         <Card style={{ border: "1px solid #C6A15B55" }}>
           <div className="text-xs mb-3 flex items-center gap-2" style={{ color: "#C6A15B" }}><Lock size={13} /> رفع خلفية جديدة — إدارة الهيئة</div>
           <input ref={fileRef} type="file" accept="image/*" onChange={handleUpload} className="hidden" />
           <button onClick={() => fileRef.current.click()} disabled={uploading} className="w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2" style={{ background: "#C6A15B", color: "#0A1310", fontWeight: 700 }}><Upload size={14} /> {uploading ? "جاري الرفع..." : "اختيار صورة ورفعها"}</button>
           {error && <p className="text-[11px] mt-2" style={{ color: "#E3866A" }}>{error}</p>}
         </Card>
-      ) : (
-        <AdminGate />
       )}
 
       <div className="grid grid-cols-3 gap-2">
@@ -1237,15 +1333,13 @@ function LibraryView({ isAdmin }) {
     <div className="px-4 pb-10 pt-2 space-y-5">
       <SectionTitle eyebrow={`${books.length} كتاب`} title="المكتبة الدينية" icon={Library} />
 
-      {isAdmin ? (
+      {isAdmin && (
         <Card style={{ border: "1px solid #C6A15B55" }}>
           <div className="text-xs mb-3 flex items-center gap-2" style={{ color: "#C6A15B" }}><Lock size={13} /> رفع كتاب PDF جديد — إدارة الهيئة</div>
           <input ref={fileRef} type="file" accept="application/pdf" onChange={handleUpload} className="hidden" />
           <button onClick={() => fileRef.current.click()} disabled={uploading} className="w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2" style={{ background: "#C6A15B", color: "#0A1310", fontWeight: 700 }}><Upload size={14} /> {uploading ? "جاري الرفع..." : "اختيار ملف PDF ورفعه"}</button>
           {error && <p className="text-[11px] mt-2" style={{ color: "#E3866A" }}>{error}</p>}
         </Card>
-      ) : (
-        <AdminGate />
       )}
 
       <div className="space-y-2">
@@ -1579,7 +1673,13 @@ export default function App() {
   const isAdmin = !!(authUser && authUser.email === ADMIN_EMAIL);
 
   const gregorian = new Date().toLocaleDateString("ar-IQ", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  const hijri = "٢٥ محرم ١٤٤٨ هـ";
+  const hijri = (() => {
+    try {
+      return new Intl.DateTimeFormat("ar-SA-u-ca-islamic-umalqura", { day: "numeric", month: "long", year: "numeric" }).format(new Date()) + " هـ";
+    } catch (e) {
+      return new Intl.DateTimeFormat("ar-SA-u-ca-islamic", { day: "numeric", month: "long", year: "numeric" }).format(new Date()) + " هـ";
+    }
+  })();
 
   const content = {
     occasions, saveOccasions,
