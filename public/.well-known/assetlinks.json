@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.onrender.hayiaa_alwaeli_app.twa",
+      "sha256_cert_fingerprints": [
+        "11:B6:20:7D:25:9F:3E:1C:32:55:ED:7D:73:48:93:A9:E9:27:57:AF:1B:F3:7B:89:5A:3F:7C:5F:67:50:4F:58"
+      ]
+    }
+  }
+]
