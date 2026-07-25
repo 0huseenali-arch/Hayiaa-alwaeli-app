@@ -41,6 +41,12 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
 
+  // ملفات الصوت (الأذان) والطلبات الجزئية (Range) نتركها للمتصفح مباشرة،
+  // لأن تخزينها في الذاكرة يقطع تشغيل الصوت الطويل.
+  if (url.pathname.endsWith(".mp3") || request.headers.has("range")) {
+    return; // المتصفح يتولّى الطلب طبيعياً
+  }
+
   // بيانات Firebase الحية والـ APIs: الشبكة أولاً (حتى تبقى محدّثة)،
   // ونرجع للذاكرة فقط عند انقطاع النت
   const isLiveData =

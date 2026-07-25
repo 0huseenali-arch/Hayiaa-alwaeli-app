@@ -284,6 +284,8 @@ function getAdhanAudio() {
   if (!adhanAudio) {
     adhanAudio = new Audio(ADHAN_SRC);
     adhanAudio.preload = "auto";
+    // نطلب من المتصفح تحميل الملف كاملاً مبكراً حتى لا ينقطع أثناء التشغيل
+    try { adhanAudio.load(); } catch (e) {}
   }
   return adhanAudio;
 }
@@ -3450,14 +3452,19 @@ function SettingsView({ goTo, isAdmin, showLoginGate, onCloseGate, authUser }) {
 
   const testAdhan = async () => {
     setAdhanMsg(null);
+    const a = getAdhanAudio();
+    // لو شغّال، هذه الضغطة توقفه
+    if (!a.paused) {
+      try { a.pause(); a.currentTime = 0; } catch (e) {}
+      setAdhanMsg({ ok: true, text: "تم الإيقاف." });
+      return;
+    }
     try {
-      const a = getAdhanAudio();
       a.currentTime = 0;
       await a.play();
-      setAdhanMsg({ ok: true, text: "يعمل بنجاح. اضغط مرة أخرى لإيقافه." });
-      setTimeout(() => { try { a.pause(); a.currentTime = 0; } catch (e) {} }, 8000);
+      setAdhanMsg({ ok: true, text: "الأذان يعمل الآن. اضغط الزر مرة أخرى لإيقافه." });
     } catch (e) {
-      setAdhanMsg({ ok: false, text: "تعذّر تشغيل الصوت — تأكد من رفع ملف adhan.mp3 ومن رفع صوت الجهاز." });
+      setAdhanMsg({ ok: false, text: "تعذّر تشغيل الصوت — تأكد من رفع صوت الجهاز." });
     }
   };
   // معاينة التاريخ الهجري حسب التعديل الحالي
