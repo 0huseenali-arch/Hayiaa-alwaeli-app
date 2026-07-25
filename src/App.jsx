@@ -275,6 +275,103 @@ const DEFAULT_SURAHS = [
   ["المسد",5],["الإخلاص",4],["الفلق",5],["الناس",6],
 ].map(([name, verses], i) => ({ n: i + 1, name, verses }));
 
+/* ------------------------- الأذان عند دخول الوقت ------------------------- */
+
+// ملف الأذان يوضع في مجلد public باسم adhan.mp3
+const ADHAN_SRC = "/adhan.mp3";
+let adhanAudio = null;
+function getAdhanAudio() {
+  if (!adhanAudio) {
+    adhanAudio = new Audio(ADHAN_SRC);
+    adhanAudio.preload = "auto";
+  }
+  return adhanAudio;
+}
+
+function isAdhanEnabled() {
+  try { return localStorage.getItem("hayaa_adhan") === "1"; } catch (e) { return false; }
+}
+function setAdhanEnabled(v) {
+  try { localStorage.setItem("hayaa_adhan", v ? "1" : "0"); } catch (e) {}
+}
+
+// المتصفحات تمنع تشغيل الصوت تلقائياً ما لم يُشغَّل مرة بلمسة من المستخدم،
+// لذا نفتح قناة الصوت عند تفعيل الخيار أو تجربته.
+async function unlockAdhanAudio() {
+  try {
+    const a = getAdhanAudio();
+    a.muted = true;
+    await a.play();
+    a.pause();
+    a.currentTime = 0;
+    a.muted = false;
+    return true;
+  } catch (e) { return false; }
+}
+
+// يراقب دخول وقت الصلاة ويشغّل الأذان مرة واحدة لكل صلاة في اليوم
+function useAdhanAlert(timings) {
+  const [firing, setFiring] = useState(null); // {label}
+
+  const stop = () => {
+    try { const a = getAdhanAudio(); a.pause(); a.currentTime = 0; } catch (e) {}
+    setFiring(null);
+  };
+
+  useEffect(() => {
+    if (!timings) return;
+    const check = () => {
+      if (!isAdhanEnabled()) return;
+      const now = new Date();
+      const dayKey = now.toISOString().slice(0, 10);
+      for (const [key, label] of PRAYER_SEQUENCE) {
+        const [h, m] = parseTimeStr(timings[key]);
+        if (h == null) continue;
+        if (now.getHours() !== h || now.getMinutes() !== m) continue;
+
+        const fireKey = dayKey + ":" + key;
+        let last = null;
+        try { last = localStorage.getItem("hayaa_adhan_last"); } catch (e) {}
+        if (last === fireKey) return;               // شُغّل مسبقاً لهذه الصلاة
+        try { localStorage.setItem("hayaa_adhan_last", fireKey); } catch (e) {}
+
+        try { const a = getAdhanAudio(); a.currentTime = 0; a.play().catch(() => {}); } catch (e) {}
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+        try {
+          if (window.Notification && Notification.permission === "granted") {
+            new Notification("حان وقت صلاة " + label, { body: "هيئة الشيخ أحمد الوائلي", icon: "/icon-192.png" });
+          }
+        } catch (e) {}
+        setFiring({ label });
+        return;
+      }
+    };
+    check();
+    const id = setInterval(check, 15000);
+    return () => clearInterval(id);
+  }, [timings]);
+
+  return { firing, stop };
+}
+
+function AdhanOverlay({ firing, onStop }) {
+  if (!firing) return null;
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center px-6" style={{ background: "#000000CC", backdropFilter: "blur(4px)" }}>
+      <div className="w-full max-w-xs rounded-3xl p-7 text-center relative overflow-hidden" style={{ background: "linear-gradient(160deg,#16241B,#0A1310)", border: "1px solid #C6A15B66" }}>
+        <div className="absolute inset-0 pointer-events-none opacity-10 flex items-center justify-center"><Sparkles size={150} color="#C6A15B" /></div>
+        <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 relative glow-pulse" style={{ background: "linear-gradient(135deg,#1F6B45,#C6A15B)" }}>
+          <Bell size={26} color="#F3EEDF" />
+        </div>
+        <div className="text-[11px] relative" style={{ color: "#C6A15B" }}>حان الآن</div>
+        <div className="relative" style={{ fontFamily: "'Cairo', sans-serif", fontWeight: 800, fontSize: 22, color: "#F3EEDF" }}>وقت صلاة {firing.label}</div>
+        <p className="text-[12px] mt-3 leading-7 relative" style={{ color: "#CDBE9A" }}>حَيَّ على الصلاة · حَيَّ على الفلاح<br />تقبّل الله منك صالح الأعمال</p>
+        <button onClick={onStop} className="mt-5 w-full py-2.5 rounded-xl text-sm relative" style={{ background: "#C6A15B", color: "#0A1310", fontWeight: 700 }}>إيقاف الأذان</button>
+      </div>
+    </div>
+  );
+}
+
 function useCountdown(hh, mm) {
   const [remaining, setRemaining] = useState("");
   useEffect(() => {
@@ -3331,15 +3428,38 @@ function SettingsView({ goTo, isAdmin, showLoginGate, onCloseGate, authUser }) {
   const [installEvt, setInstallEvt] = useState(null);
   const [shared, setShared] = useState(false);
   const [hijriOffset, setHijriOffset] = useState(-1);
+  const [adhanOn, setAdhanOn] = useState(false);
+  const [adhanMsg, setAdhanMsg] = useState(null);
 
-  useEffect(() => { setHijriOffset(getHijriOffset()); }, []);
+  useEffect(() => { setAdhanOn(isAdhanEnabled()); }, []);
 
-  const changeHijriOffset = (n) => {
-    const v = Math.max(-3, Math.min(3, n));
-    setHijriOffset(v);
-    try { localStorage.setItem("hayaa_hijri_offset", String(v)); } catch (e) {}
+  const toggleAdhan = async () => {
+    setAdhanMsg(null);
+    if (adhanOn) {
+      setAdhanEnabled(false); setAdhanOn(false);
+      return;
+    }
+    const ok = await unlockAdhanAudio();
+    setAdhanEnabled(true); setAdhanOn(true);
+    // نطلب إذن الإشعارات ليظهر تنبيه مع الأذان
+    try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+    setAdhanMsg(ok
+      ? { ok: true, text: "تم التفعيل. سيُرفع الأذان عند دخول وقت كل صلاة." }
+      : { ok: false, text: "تم التفعيل، لكن تعذّر تجهيز الصوت. جرّب زر التجربة أدناه." });
   };
 
+  const testAdhan = async () => {
+    setAdhanMsg(null);
+    try {
+      const a = getAdhanAudio();
+      a.currentTime = 0;
+      await a.play();
+      setAdhanMsg({ ok: true, text: "يعمل بنجاح. اضغط مرة أخرى لإيقافه." });
+      setTimeout(() => { try { a.pause(); a.currentTime = 0; } catch (e) {} }, 8000);
+    } catch (e) {
+      setAdhanMsg({ ok: false, text: "تعذّر تشغيل الصوت — تأكد من رفع ملف adhan.mp3 ومن رفع صوت الجهاز." });
+    }
+  };
   // معاينة التاريخ الهجري حسب التعديل الحالي
   const hijriPreview = (() => {
     try {
@@ -3466,8 +3586,26 @@ function SettingsView({ goTo, isAdmin, showLoginGate, onCloseGate, authUser }) {
         التطبيق مُعدّ وفق مذهب أهل البيت عليهم السلام (الجعفري الإثنا عشري)، ويشمل الأدعية والزيارات ومواقيت الصلاة وفق هذا المذهب.
       </Row>
 
-      <Row id="notif" icon={Bell} label="الإشعارات">
-        لتلقّي تنبيهات مواقيت الصلاة والمناسبات، تأكد من السماح بالإشعارات لهذا الموقع من إعدادات متصفحك. (خدمة الإشعارات التلقائية قيد التطوير وستتوفر في تحديث قادم.)
+      <Row id="notif" icon={Bell} label="الأذان والتنبيهات">
+        <p className="leading-7">
+          عند تفعيل الأذان، يُرفع تلقائياً عند دخول وقت كل صلاة <strong>ما دام التطبيق مفتوحاً</strong>.
+        </p>
+
+        <button onClick={toggleAdhan} className="mt-3 w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2" style={{ background: adhanOn ? "#1F6B45" : "#17261E", border: "1px solid " + (adhanOn ? "#1F6B45" : "#24382C"), color: adhanOn ? "#F3EEDF" : "#8FA396", fontWeight: 700 }}>
+          <Bell size={14} /> {adhanOn ? "الأذان مُفعَّل — اضغط للإيقاف" : "تفعيل الأذان"}
+        </button>
+
+        {adhanOn && (
+          <button onClick={testAdhan} className="mt-2 w-full py-2.5 rounded-xl text-xs flex items-center justify-center gap-2" style={{ background: "#17261E", border: "1px solid #24382C", color: "#E3C078" }}>
+            <Music2 size={13} /> تجربة صوت الأذان
+          </button>
+        )}
+
+        {adhanMsg && <p className="text-[11px] mt-2 text-center leading-6" style={{ color: adhanMsg.ok ? "#8FD6A8" : "#E3866A" }}>{adhanMsg.text}</p>}
+
+        <p className="text-[10px] mt-3 leading-6" style={{ color: "#6E8377" }}>
+          ملاحظة: التنبيهات التي تصل والتطبيق مغلق قيد الإعداد وستتوفر في تحديث قادم.
+        </p>
       </Row>
 
       <Row id="privacy" icon={ShieldAlert} label="الخصوصية">
@@ -3570,6 +3708,8 @@ export default function App() {
     return () => unsubscribe();
   }, []);
   const isAdmin = !!(authUser && authUser.email === ADMIN_EMAIL);
+  // الأذان عند دخول وقت الصلاة (يعمل والتطبيق مفتوح)
+  const { firing: adhanFiring, stop: stopAdhan } = useAdhanAlert(prayerData.timings);
 
   // الوصول لبوابة الإدارة عبر رابط سري: إضافة #idara-alwaeli لعنوان الموقع
   const [showLoginGate, setShowLoginGate] = useState(false);
@@ -3655,6 +3795,7 @@ export default function App() {
     <div dir="rtl" className="min-h-screen w-full" style={{ background: "#0A1310", fontFamily: "'Cairo', sans-serif", fontWeight: 600, WebkitFontSmoothing: "antialiased", textRendering: "optimizeLegibility" }}>
       <style>{FONTS}</style>
       {showSplash && <Splash onDone={() => setShowSplash(false)} />}
+      <AdhanOverlay firing={adhanFiring} onStop={stopAdhan} />
       {!showSplash && authUser === null && <WelcomeGate />}
       <div className="max-w-md mx-auto min-h-screen relative" style={{ boxShadow: "0 0 60px #00000066" }}>
         <Header onMenu={() => setSidebarOpen(true)} dateMode={dateMode} setDateMode={setDateMode} gregorian={gregorian} hijri={hijri} />
