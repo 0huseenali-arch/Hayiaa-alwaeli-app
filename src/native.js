@@ -7,17 +7,15 @@
 import { Capacitor } from '@capacitor/core'
 import { App as CapApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
+import { LocalNotifications } from '@capacitor/local-notifications'
+import { schedulePrayerNotifications } from './prayerNotifications.js'
 
-// المدة التي تُحتسب فيها الضغطتان "متتاليتين" للخروج
 const EXIT_WINDOW_MS = 2000
 
 let lastBackPress = 0
-
-// عدّاد العمق: كم صفحة داخلين فعلياً من الرئيسية
-// (لا نستخدم window.history.length لأنه يزيد ولا ينقص أبداً)
 let depth = 0
 
-// ---------- تتبّع عمق التنقّل ----------
+/* ---------- تتبّع عمق التنقّل ---------- */
 function trackDepth() {
   const originalPush = window.history.pushState.bind(window.history)
 
@@ -31,7 +29,7 @@ function trackDepth() {
   })
 }
 
-// ---------- تلميح الخروج ----------
+/* ---------- تلميح الخروج ---------- */
 function showExitHint() {
   let el = document.getElementById('exit-hint')
   if (!el) {
@@ -39,18 +37,12 @@ function showExitHint() {
     el.id = 'exit-hint'
     el.textContent = 'اضغط رجوع مرة أخرى للخروج'
     el.style.cssText = [
-      'position:fixed',
-      'left:50%',
-      'bottom:80px',
+      'position:fixed', 'left:50%', 'bottom:80px',
       'transform:translateX(-50%)',
-      'background:rgba(0,0,0,0.85)',
-      'color:#fff',
-      'padding:10px 20px',
-      'border-radius:24px',
-      'font-family:Cairo,sans-serif',
-      'font-size:14px',
-      'z-index:99999',
-      'pointer-events:none',
+      'background:rgba(0,0,0,0.85)', 'color:#fff',
+      'padding:10px 20px', 'border-radius:24px',
+      'font-family:Cairo,sans-serif', 'font-size:14px',
+      'z-index:99999', 'pointer-events:none',
       'transition:opacity .3s',
     ].join(';')
     document.body.appendChild(el)
@@ -60,17 +52,15 @@ function showExitHint() {
   el._t = setTimeout(() => { el.style.opacity = '0' }, EXIT_WINDOW_MS)
 }
 
-// ---------- زر الرجوع الفيزيائي وإيماءة السحب ----------
+/* ---------- زر الرجوع الفيزيائي وإيماءة السحب ---------- */
 function setupBackButton() {
   CapApp.addListener('backButton', () => {
-    // ما زلنا داخل الأقسام: نرجع صفحة واحدة
     if (depth > 0) {
       window.history.back()
       lastBackPress = 0
       return
     }
 
-    // إحنا بالصفحة الرئيسية: ضغطتان للخروج
     const now = Date.now()
     if (now - lastBackPress < EXIT_WINDOW_MS) {
       CapApp.exitApp()
@@ -81,7 +71,7 @@ function setupBackButton() {
   })
 }
 
-// ---------- إذن الموقع (لمواقيت الصلاة واتجاه القبلة) ----------
+/* ---------- إذن الموقع (لمواقيت الصلاة واتجاه القبلة) ---------- */
 async function requestLocationPermission() {
   try {
     const status = await Geolocation.checkPermissions()
@@ -93,13 +83,33 @@ async function requestLocationPermission() {
   }
 }
 
-// ---------- نقطة الدخول ----------
+/* ---------- إذن الإشعارات (للأذان ومنشورات الهيئة) ---------- */
+async function requestNotificationPermission() {
+  try {
+    const st = await LocalNotifications.checkPermissions()
+    if (st.display !== 'granted') await LocalNotifications.requestPermissions()
+  } catch (e) {
+    console.warn('notification permission:', e)
+  }
+}
+
+/* ---------- نقطة الدخول ---------- */
 export function initNative() {
   if (!Capacitor.isNativePlatform()) return   // داخل المتصفح: لا نفعل شيئاً
 
   trackDepth()
   setupBackButton()
 
-  // نطلب الإذن بعد ثانيتين حتى لا تظهر النافذة فوق شاشة البداية
-  setTimeout(requestLocationPermission, 2000)
+  // نطلب الإذن بعد ثانيتين حتى لا تظهر النافذة فوق شاشة البداية،
+  // ثم نجدول الأذان بعدها مباشرة
+  setTimeout(async () => {
+    await requestNotificationPermission()   // مطلوب دائماً — للأذان ولمنشورات الهيئة
+    await requestLocationPermission()
+    schedulePrayerNotifications()
+  }, 2000)
+
+  // إعادة الجدولة كلما رجع المستخدم للتطبيق (تُنفَّذ فعلياً مرة كل 20 ساعة)
+  CapApp.addListener('appStateChange', ({ isActive }) => {
+    if (isActive) schedulePrayerNotifications()
+  })
 }

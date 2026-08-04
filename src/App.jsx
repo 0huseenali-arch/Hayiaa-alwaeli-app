@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import storage from "./storage";
 import { enableNotifications, getSavedNotificationSettings, GOVERNORATES as PUSH_GOVERNORATES, DEFAULT_PREFS as PUSH_DEFAULT_PREFS, listenForegroundMessages } from "./notifications";
+import { refreshPrayerNotifications } from "./prayerNotifications";
 import mafatihData from "./mafatihData.json";
 import booksData from "./booksData.json";
 import { uploadFile, deleteFile } from "./fileUpload";
@@ -3593,12 +3594,14 @@ function SettingsView({ goTo, isAdmin, showLoginGate, onCloseGate, authUser }) {
     setAdhanMsg(null);
     if (adhanOn) {
       setAdhanEnabled(false); setAdhanOn(false);
+      try { refreshPrayerNotifications(); } catch (e) {}   // يلغي كل ما هو مجدول
       return;
     }
     const ok = await unlockAdhanAudio();
     setAdhanEnabled(true); setAdhanOn(true);
     // نطلب إذن الإشعارات ليظهر تنبيه مع الأذان
     try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+    try { refreshPrayerNotifications(); } catch (e) {}     // يجدول الأذان على الجهاز فوراً
     setAdhanMsg(ok
       ? { ok: true, text: "تم التفعيل. سيُرفع الأذان عند دخول وقت كل صلاة." }
       : { ok: false, text: "تم التفعيل، لكن تعذّر تجهيز الصوت. جرّب زر التجربة أدناه." });
@@ -3757,7 +3760,7 @@ function SettingsView({ goTo, isAdmin, showLoginGate, onCloseGate, authUser }) {
 
       <Row id="notif" icon={Bell} label="الأذان والتنبيهات">
         <p className="leading-7">
-          عند تفعيل الأذان، يُرفع تلقائياً عند دخول وقت كل صلاة <strong>ما دام التطبيق مفتوحاً</strong>.
+          عند تفعيل الأذان، يُرفع تلقائياً عند دخول وقت كل صلاة — <strong>حتى لو كان التطبيق مسكّراً والشاشة مطفية، وبدون إنترنت</strong>.
         </p>
 
         <button onClick={toggleAdhan} className="mt-3 w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2" style={{ background: adhanOn ? "#1F6B45" : "#17261E", border: "1px solid " + (adhanOn ? "#1F6B45" : "#24382C"), color: adhanOn ? "#F3EEDF" : "#8FA396", fontWeight: 700 }}>
@@ -3773,48 +3776,8 @@ function SettingsView({ goTo, isAdmin, showLoginGate, onCloseGate, authUser }) {
         {adhanMsg && <p className="text-[11px] mt-2 text-center leading-6" style={{ color: adhanMsg.ok ? "#8FD6A8" : "#E3866A" }}>{adhanMsg.text}</p>}
 
         <p className="text-[10px] mt-3 leading-6" style={{ color: "#6E8377" }}>
-          ملاحظة: التنبيهات التي تصل والتطبيق مغلق قيد الإعداد وستتوفر في تحديث قادم.
+          يُحسب وقت كل صلاة حسب موقعك وفق الطريقة الجعفرية. أما إشعارات منشورات الهيئة فتصلك تلقائياً، ويمكن إيقافها من إعدادات الإشعارات في جهازك.
         </p>
-      </Row>
-
-      <Row id="pushnotif" icon={Bell} label="إشعارات مواقيت الصلاة والمنشورات">
-        <p className="leading-7 mb-3">
-          هذي إشعارات تصلك <strong>حتى لو التطبيق مسكّر</strong> (منشور جديد، دخول وقت الصلاة، آية يومية) — تحتاج تحدد محافظتك حتى تكون مواقيت الصلاة دقيقة.
-        </p>
-
-        <label className="text-[11px] block mb-1.5" style={{ color: "#8FA396" }}>محافظتك</label>
-        <select
-          value={pushGov}
-          onChange={(e) => setPushGov(e.target.value)}
-          className="w-full rounded-xl px-3 py-2.5 text-sm mb-3"
-          style={{ background: "#0F1913", border: "1px solid #24382C", color: "#F3EEDF" }}
-        >
-          <option value="">اختر المحافظة</option>
-          {PUSH_GOVERNORATES.map((g) => (
-            <option key={g.slug} value={g.slug}>{g.name}</option>
-          ))}
-        </select>
-
-        {[
-          { key: "newPost", label: "منشور جديد من الهيئة" },
-          { key: "prayerTimes", label: "تذكير مواقيت الصلاة" },
-          { key: "adhan", label: "إشعار الأذان (حتى والتطبيق مسكّر)" },
-          { key: "dailyVerse", label: "آية / حكمة يومية" },
-        ].map((row) => (
-          <div key={row.key} className="flex items-center justify-between py-1.5 text-sm" style={{ color: "#F3EEDF" }}>
-            <span>{row.label}</span>
-            <input type="checkbox" checked={!!pushPrefs[row.key]} onChange={() => togglePushPref(row.key)} />
-          </div>
-        ))}
-
-        <button onClick={savePush} className="mt-3 w-full py-2.5 rounded-xl text-sm flex items-center justify-center gap-2" style={{ background: "#C6A15B", color: "#0A1310", fontWeight: 700 }}>
-          <Bell size={14} /> {pushStatus === "loading" ? "جاري الحفظ..." : "حفظ إعدادات الإشعارات"}
-        </button>
-
-        {pushStatus === "success" && <p className="text-[11px] mt-2 text-center leading-6" style={{ color: "#8FD6A8" }}>تم التفعيل بنجاح ✅</p>}
-        {pushStatus === "denied" && <p className="text-[11px] mt-2 text-center leading-6" style={{ color: "#E3866A" }}>لازم تسمح بالإشعارات من إعدادات المتصفح/الجهاز</p>}
-        {pushStatus === "error" && <p className="text-[11px] mt-2 text-center leading-6" style={{ color: "#E3866A" }}>صار خطأ: {pushErrorDetail || "جرّب مرة ثانية"}</p>}
-        {pushStatus === "need-gov" && <p className="text-[11px] mt-2 text-center leading-6" style={{ color: "#E3866A" }}>اختر محافظتك أولاً</p>}
       </Row>
 
       <Row id="privacy" icon={ShieldAlert} label="الخصوصية">
@@ -3865,6 +3828,8 @@ export default function App() {
   const [showNotifyOnboard, setShowNotifyOnboard] = useState(false);
   useEffect(() => {
     if (showSplash || authUser === undefined || authUser === null) return;
+    // داخل التطبيق الأصلي: الإذن يُطلب من النظام عند البدء، فلا داعي لهذه النافذة
+    try { if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) return; } catch (e) {}
     try {
       const seen = localStorage.getItem("push_onboard_seen");
       if (!seen && typeof Notification !== "undefined" && Notification.permission === "default") {

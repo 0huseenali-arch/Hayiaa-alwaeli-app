@@ -46,11 +46,17 @@
     <!-- الإشعارات (أندرويد 13 فما فوق) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- الاهتزاز الخفيف عند الضغط والتسبيح -->
+    <!-- الاهتزاز عند الضغط والتسبيح وعند الأذان -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- إبقاء الشاشة/المعالج يقظاً أثناء تشغيل الأذان والمحاضرات -->
+    <!-- إبقاء المعالج يقظاً أثناء تشغيل الأذان والمحاضرات -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- ===== الأذان: تنبيه في وقت محدّد بدقّة ===== -->
+    <!-- SCHEDULE_EXACT_ALARM: يطلبه التطبيق من المستخدم عند الحاجة -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- إعادة جدولة الأذان تلقائياً بعد إعادة تشغيل الهاتف -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- ===== الحساسات: اختيارية حتى لا تستبعد Google Play الأجهزة التي تفتقدها ===== -->
     <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
