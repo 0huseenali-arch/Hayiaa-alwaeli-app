@@ -1,0 +1,11 @@
+{
+  "appId": "com.alwaeli.hayaa",
+  "appName": "هيئة الشيخ أحمد الوائلي",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
