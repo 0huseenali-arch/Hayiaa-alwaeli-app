@@ -959,7 +959,7 @@ function HomeView({ gregorian, hijri, posts, goTo: goToRaw, quote, todayEvent, w
           <Card><p className="text-xs" style={{ color: "#8FA396" }}>لا توجد منشورات بعد — أول منشور من إدارة الهيئة سيظهر هنا.</p></Card>
         ) : (
           <div className="space-y-2">{latest.map((p) => (
-            <Card key={p.id}><div className="flex items-center justify-between mb-1"><span className="text-sm font-semibold" style={{ color: "#F3EEDF" }}>{p.title}</span><span className="text-[10px]" style={{ color: "#6E8377" }}>{p.date}</span></div>{p.media && p.mediaType === "image" && <img src={p.media} alt="" className="w-full rounded-lg my-2" style={{ maxHeight: 200, objectFit: "cover" }} />}{p.media && p.mediaType === "video" && <video src={p.media} controls className="w-full rounded-lg my-2" style={{ maxHeight: 200, background: "#000" }} />}<p className="text-xs leading-6 whitespace-pre-line" style={{ color: "#B7C4BB" }}>{p.body}</p></Card>
+            <Card key={p.id}><div className="flex items-center justify-between mb-1"><span className="text-sm font-semibold" style={{ color: "#F3EEDF" }}>{p.title}</span><span className="text-[10px]" style={{ color: "#6E8377" }}>{p.date}</span></div><PostMedia post={p} maxHeight={200} rounded="rounded-lg" /><p className="text-xs leading-6 whitespace-pre-line" style={{ color: "#B7C4BB" }}>{p.body}</p></Card>
           ))}</div>
         )}
       </div>
@@ -1056,7 +1056,11 @@ function PostsView({ posts, setPosts, isAdmin }) {
   const removePost = async (p) => {
     const arr = posts.filter((x) => x.id !== p.id);
     setPosts(arr); await persist(arr);
-    if (p.mediaPath) deleteFile(p.mediaPath);
+    if (Array.isArray(p.mediaItems) && p.mediaItems.length) {
+      p.mediaItems.forEach((m) => { if (m && m.path) deleteFile(m.path); });
+    } else if (p.mediaPath) {
+      deleteFile(p.mediaPath);
+    }
   };
 
   return (
@@ -1095,8 +1099,7 @@ function PostsView({ posts, setPosts, isAdmin }) {
               <span className="text-sm font-semibold" style={{ color: "#F3EEDF" }}>{p.title}</span>
               <div className="flex items-center gap-2"><span className="text-[10px]" style={{ color: "#6E8377" }}>{p.date}</span>{isAdmin && <button onClick={() => removePost(p)}><Trash2 size={13} color="#E3866A" /></button>}</div>
             </div>
-            {p.media && p.mediaType === "image" && <img src={p.media} alt="" className="w-full rounded-xl my-2" style={{ maxHeight: 360, objectFit: "cover" }} />}
-            {p.media && p.mediaType === "video" && <video src={p.media} controls className="w-full rounded-xl my-2" style={{ maxHeight: 360, background: "#000" }} />}
+            <PostMedia post={p} maxHeight={360} rounded="rounded-xl" />
             <p className="text-xs leading-6 whitespace-pre-line" style={{ color: "#B7C4BB" }}>{p.body}</p>
           </Card>
         ))}
@@ -2555,6 +2558,83 @@ function useBackClose(isOpen, onClose) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
+}
+
+/* --------------------------------- ميديا المنشور --------------------------------- */
+
+/* يعرض صورة أو فيديو واحداً، أو شريط تمرير إذا كان المنشور متعدد الصور */
+function PostMedia({ post, maxHeight = 240, rounded = "rounded-lg" }) {
+  const items =
+    Array.isArray(post.mediaItems) && post.mediaItems.length
+      ? post.mediaItems
+      : post.media
+      ? [{ url: post.media, type: post.mediaType || "image" }]
+      : [];
+
+  const [idx, setIdx] = useState(0);
+  const scroller = useRef(null);
+
+  if (!items.length) return null;
+
+  const render = (it, key) =>
+    it.type === "video" ? (
+      <video key={key} src={it.url} controls playsInline className={"w-full " + rounded} style={{ maxHeight, background: "#000" }} />
+    ) : (
+      <img key={key} src={it.url} alt="" className={"w-full " + rounded} style={{ maxHeight, objectFit: "cover" }} />
+    );
+
+  if (items.length === 1) {
+    return <div className="my-2">{render(items[0], 0)}</div>;
+  }
+
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const w = el.clientWidth || 1;
+    setIdx(Math.min(items.length - 1, Math.round(Math.abs(el.scrollLeft) / w)));
+  };
+
+  return (
+    <div className="my-2 relative">
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        dir="ltr"
+        className="flex overflow-x-auto snap-x snap-mandatory no-scrollbar"
+        style={{ scrollbarWidth: "none", gap: 0 }}
+      >
+        {items.map((it, i) => (
+          <div key={i} className="shrink-0 w-full snap-center">
+            {render(it, i)}
+          </div>
+        ))}
+      </div>
+
+      {/* عدّاد أعلى اليمين */}
+      <div
+        className="absolute top-2 left-2 px-2 py-0.5 rounded-full text-[10px]"
+        style={{ background: "rgba(0,0,0,0.6)", color: "#F3EEDF" }}
+      >
+        {idx + 1} / {items.length}
+      </div>
+
+      {/* نقاط أسفل */}
+      <div className="flex items-center justify-center gap-1.5 mt-2">
+        {items.map((_, i) => (
+          <span
+            key={i}
+            style={{
+              width: i === idx ? 14 : 5,
+              height: 5,
+              borderRadius: 999,
+              background: i === idx ? "#C6A15B" : "#3A4A40",
+              transition: "width .2s",
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* --------------------------------- عدّاد التكرار (مائة مرّة) --------------------------------- */

@@ -1,149 +1,51 @@
 /**
  * ============================================================
  *  إشعارات تطبيق هيئة الشيخ أحمد الوائلي — Cloud Functions
- *  (النسخة المعتمدة على OneSignal بدل Firebase Cloud Messaging)
  * ============================================================
- *  4 أنواع إشعارات:
- *   1) منشور جديد من الهيئة       -> tag: pref_newPost = "1"
- *   2) تذكير مواقيت الصلاة        -> tag: pref_prayerTimes = "1"
- *   3) أذان عند دخول الوقت        -> tag: pref_adhan = "1"
- *   4) آية / حكمة يومية           -> tag: pref_dailyVerse = "1"
+ *  الدوال الحالية:
+ *   1) onNewPost            -> إشعار عند نزول منشور جديد
+ *   2) fetchInstagramPosts  -> سحب منشورات إنستغرام كل ساعة
+ *   3) refreshInstagramToken-> تجديد رمز الوصول شهرياً
  *
- *  كل مستخدم عنده tag لمحافظته (gov_<slug> = "1") + الأنواع التي فعّلها.
- *  الاشتراك (تحديث الـ tags على OneSignal) يتم فقط عبر الدالة
- *  updateNotificationSubscriptions.
+ *  لماذا حُذف الباقي سابقاً؟
+ *   - الأذان ومواقيت الصلاة  -> صارت تُجدول محلياً داخل الهاتف
+ *   - الحكمة اليومية         -> صارت ضمن التذكيرات المحلية
+ *   - updateNotificationSubscriptions -> كان يخدم صف الإعدادات الملغى
  * ============================================================
  */
 
 const { initializeApp } = require("firebase-admin/app");
 const { getDatabase } = require("firebase-admin/database");
+const { getStorage } = require("firebase-admin/storage");
 const { onValueWritten } = require("firebase-functions/v2/database");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
+const crypto = require("crypto");
 
 const ONESIGNAL_REST_API_KEY = defineSecret("ONESIGNAL_REST_API_KEY");
 const ONESIGNAL_APP_ID = "601cac8e-baf6-40d1-ba32-75fef5f02281";
 
+const DB_URL =
+  "https://alwaeli-e5bf0-default-rtdb.asia-southeast1.firebasedatabase.app";
+const STORAGE_BUCKET = "alwaeli-e5bf0.firebasestorage.app";
+const REGION = "asia-southeast1";
+const DB_INSTANCE = "alwaeli-e5bf0-default-rtdb";
+
+// معرّف حساب إنستغرام للهيئة (ليس سرّاً)
+const IG_USER_ID = "17841476812685717";
+
+// أقصى عدد صور/فيديوهات نسحبها من المنشور الواحد
+const MAX_MEDIA_PER_POST = 10;
+
 initializeApp({
-  databaseURL: "https://alwaeli-e5bf0-default-rtdb.asia-southeast1.firebasedatabase.app",
+  databaseURL: DB_URL,
+  storageBucket: STORAGE_BUCKET,
 });
-const db = getDatabase();
-
-const REGION = "us-central1";
-const TIMEZONE = "Asia/Baghdad";
-
-// ---------------------------------------------------------------
-// 18 محافظة عراقية بإحداثيات مركز كل محافظة
-// ---------------------------------------------------------------
-const GOVERNORATES = [
-  { slug: "baghdad", name: "بغداد", lat: 33.3152, lng: 44.3661 },
-  { slug: "basra", name: "البصرة", lat: 30.5085, lng: 47.7804 },
-  { slug: "nineveh", name: "نينوى", lat: 36.3489, lng: 43.1189 },
-  { slug: "erbil", name: "أربيل", lat: 36.1911, lng: 44.0092 },
-  { slug: "sulaymaniyah", name: "السليمانية", lat: 35.5558, lng: 45.4351 },
-  { slug: "duhok", name: "دهوك", lat: 36.8617, lng: 42.9891 },
-  { slug: "kirkuk", name: "كركوك", lat: 35.4681, lng: 44.3922 },
-  { slug: "najaf", name: "النجف الأشرف", lat: 31.9955, lng: 44.3283 },
-  { slug: "karbala", name: "كربلاء المقدسة", lat: 32.6149, lng: 44.0246 },
-  { slug: "babil", name: "بابل", lat: 32.4645, lng: 44.4162 },
-  { slug: "wasit", name: "واسط", lat: 32.5122, lng: 45.8235 },
-  { slug: "maysan", name: "ميسان", lat: 31.8353, lng: 47.1481 },
-  { slug: "dhiqar", name: "ذي قار", lat: 31.0563, lng: 46.2585 },
-  { slug: "muthanna", name: "المثنى", lat: 31.3234, lng: 45.2949 },
-  { slug: "qadisiyyah", name: "القادسية", lat: 31.989, lng: 44.9199 },
-  { slug: "anbar", name: "الأنبار", lat: 33.4207, lng: 43.3009 },
-  { slug: "salahaldin", name: "صلاح الدين", lat: 34.6081, lng: 43.6779 },
-  { slug: "diyala", name: "ديالى", lat: 33.7461, lng: 44.6434 },
-];
-
-const PRAYER_LABELS = {
-  fajr: "الفجر",
-  dhuhr: "الظهر والعصر",
-  maghrib: "المغرب والعشاء",
-};
-
-const PREF_KEYS = ["newPost", "prayerTimes", "adhan", "dailyVerse"];
-
-// ---------------------------------------------------------------
-// أدوات تنسيق الوقت بتوقيت بغداد
-// ---------------------------------------------------------------
-function formatHHMM(date) {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: TIMEZONE,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
-}
-
-function formatDateKey(date) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: TIMEZONE }).format(date); // YYYY-MM-DD
-}
-
-// ---------------------------------------------------------------
-// حساب فلكي مباشر لمواقيت الصلاة (بدون أي حزمة خارجية)
-// جعفرية 3 أوقات — زاوية الفجر 18°، المغرب 4°
-// ---------------------------------------------------------------
-const FAJR_ANGLE = 18;
-const MAGHRIB_ANGLE = 4;
-
-const dsin = (d) => Math.sin((d * Math.PI) / 180);
-const dcos = (d) => Math.cos((d * Math.PI) / 180);
-const darcsin = (x) => (Math.asin(x) * 180) / Math.PI;
-const darccos = (x) => (Math.acos(x) * 180) / Math.PI;
-const darctan2 = (y, x) => (Math.atan2(y, x) * 180) / Math.PI;
-const fixAngle = (a) => { a = a % 360; return a < 0 ? a + 360 : a; };
-const fixHour = (a) => { a = a % 24; return a < 0 ? a + 24 : a; };
-
-function julianDate(y, m, d) {
-  if (m <= 2) { y -= 1; m += 12; }
-  const A = Math.floor(y / 100);
-  const B = 2 - A + Math.floor(A / 4);
-  return Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + d + B - 1524.5;
-}
-
-function sunPosition(jd) {
-  const D = jd - 2451545.0;
-  const g = fixAngle(357.529 + 0.98560028 * D);
-  const q = fixAngle(280.459 + 0.98564736 * D);
-  const L = fixAngle(q + 1.915 * dsin(g) + 0.02 * dsin(2 * g));
-  const e = 23.439 - 0.00000036 * D;
-  const RA = darctan2(dcos(e) * dsin(L), dcos(L)) / 15;
-  const eqt = q / 15 - fixHour(RA);
-  const decl = darcsin(dsin(e) * dsin(L));
-  return { decl, eqt };
-}
-
-function angleTime(angle, jd, lat, dhuhrUTC, before) {
-  const { decl: D } = sunPosition(jd);
-  const cosH = (-dsin(angle) - dsin(D) * dsin(lat)) / (dcos(D) * dcos(lat));
-  const clamped = Math.max(-1, Math.min(1, cosH));
-  const t = darccos(clamped) / 15;
-  return fixHour(dhuhrUTC + (before ? -t : t));
-}
-
-function getPrayerTimes(lat, lng, date) {
-  const jd = julianDate(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
-  const { eqt } = sunPosition(jd);
-  const dhuhrUTC = fixHour(12 - lng / 15 - eqt);
-  const fajrUTC = angleTime(FAJR_ANGLE, jd, lat, dhuhrUTC, true);
-  const maghribUTC = angleTime(MAGHRIB_ANGLE, jd, lat, dhuhrUTC, false);
-
-  const toDate = (hourUTC) => {
-    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-    d.setUTCHours(0, 0, 0, 0);
-    d.setUTCMinutes(Math.round(hourUTC * 60));
-    return d;
-  };
-
-  return { fajr: toDate(fajrUTC), dhuhr: toDate(dhuhrUTC), maghrib: toDate(maghribUTC) };
-}
 
 // =================================================================
-// إرسال إشعار عبر OneSignal REST API حسب فلاتر tags
+// إرسال إشعار عبر OneSignal لكل المشتركين
 // =================================================================
-async function sendOneSignalNotification(restApiKey, { title, body, filters, data }) {
+async function sendToAll(restApiKey, { title, body, data }) {
   try {
     const res = await fetch("https://onesignal.com/api/v1/notifications", {
       method: "POST",
@@ -155,16 +57,16 @@ async function sendOneSignalNotification(restApiKey, { title, body, filters, dat
         app_id: ONESIGNAL_APP_ID,
         headings: { en: title },
         contents: { en: body },
-        filters,
+        included_segments: ["Total Subscriptions"],
         data: data || {},
-        url: "https://hayiaa-alwaeli-app.onrender.com/",
       }),
     });
+
     const json = await res.json();
     if (json.errors) {
       console.error("فشل إرسال OneSignal:", JSON.stringify(json.errors));
     } else {
-      console.log("نجح إرسال OneSignal — id:", json.id, "المستلمون:", json.recipients);
+      console.log("نجح الإرسال — id:", json.id, "المستلمون:", json.recipients);
     }
     return json;
   } catch (err) {
@@ -173,25 +75,30 @@ async function sendOneSignalNotification(restApiKey, { title, body, filters, dat
 }
 
 // =================================================================
-// 1) منشور جديد من الهيئة
+// منشور جديد من الهيئة
 // =================================================================
 exports.onNewPost = onValueWritten(
   {
     ref: "/hayaa_posts",
-    instance: "alwaeli-e5bf0-default-rtdb",
-    region: "asia-southeast1",
+    instance: DB_INSTANCE,
+    region: REGION,
     secrets: [ONESIGNAL_REST_API_KEY],
   },
   async (event) => {
     try {
       const beforeRaw = event.data.before.val();
       const afterRaw = event.data.after.val();
-      if (!afterRaw) { console.log("onNewPost: لا يوجد محتوى بعد التغيير، تجاهل."); return; }
+      if (!afterRaw) {
+        console.log("onNewPost: لا يوجد محتوى بعد التغيير، تجاهل.");
+        return;
+      }
 
       const beforeArr = beforeRaw ? JSON.parse(beforeRaw) : [];
       const afterArr = JSON.parse(afterRaw);
 
-      console.log(`onNewPost: قبل=${beforeArr.length} منشور، بعد=${afterArr.length} منشور.`);
+      console.log(
+        `onNewPost: قبل=${beforeArr.length} منشور، بعد=${afterArr.length} منشور.`
+      );
 
       if (!Array.isArray(afterArr) || afterArr.length <= beforeArr.length) {
         console.log("onNewPost: العدد لم يزد (تعديل أو حذف)، لا إرسال.");
@@ -201,20 +108,23 @@ exports.onNewPost = onValueWritten(
       const newest = afterArr[0];
       const beforeIds = new Set(beforeArr.map((p) => p && p.id));
       if (!newest || beforeIds.has(newest.id)) {
-        console.log("onNewPost: المنشور الأحدث موجود مسبقاً، لا إرسال.", newest && newest.id);
+        console.log("onNewPost: المنشور الأحدث موجود مسبقاً، لا إرسال.");
         return;
       }
 
-      console.log("onNewPost: منشور جديد فعلي، جاري الإرسال:", newest.id, newest.title);
+      console.log("onNewPost: منشور جديد فعلي:", newest.id, newest.title);
 
-      const caption = (newest.title || newest.body || "اضغط لعرض المنشور الجديد")
+      // نُفضّل نص المنشور على العنوان، لأن عنوان المنشورات المسحوبة
+      // من إنستغرام ثابت وسيتكرر مع عنوان الإشعار نفسه
+      const caption = (newest.body || newest.title || "اضغط لعرض المنشور الجديد")
         .toString()
+        .replace(/\s+/g, " ")
+        .trim()
         .slice(0, 120);
 
-      await sendOneSignalNotification(ONESIGNAL_REST_API_KEY.value(), {
+      await sendToAll(ONESIGNAL_REST_API_KEY.value(), {
         title: "منشور جديد من الهيئة",
         body: caption,
-        filters: [{ field: "tag", key: "pref_newPost", relation: "=", value: "1" }],
         data: { type: "newPost", postId: String(newest.id) },
       });
     } catch (err) {
@@ -224,130 +134,354 @@ exports.onNewPost = onValueWritten(
 );
 
 // =================================================================
-// 2) و 3) تذكير مواقيت الصلاة + الأذان — دالة مجدولة كل دقيقة
+//  أدوات مساعدة لمزامنة إنستغرام
 // =================================================================
-exports.checkPrayerTimes = onSchedule(
-  { schedule: "every 1 minutes", timeZone: TIMEZONE, region: REGION, secrets: [ONESIGNAL_REST_API_KEY] },
-  async () => {
-    const restKey = ONESIGNAL_REST_API_KEY.value();
-    const now = new Date();
-    const nowStr = formatHHMM(now);
-    const dateKey = formatDateKey(now);
 
-    for (const gov of GOVERNORATES) {
-      const times = getPrayerTimes(gov.lat, gov.lng, now);
-
-      for (const [prayer, time] of Object.entries(times)) {
-        if (formatHHMM(time) !== nowStr) continue;
-
-        const sentRef = db.ref(`push_sent/${gov.slug}/${dateKey}/${prayer}`);
-        const snap = await sentRef.once("value");
-        if (snap.val()) continue; // أُرسل مسبقاً اليوم لهذا الوقت
-        await sentRef.set(true);
-
-        const label = PRAYER_LABELS[prayer];
-
-        // إشعار تذكير نصي عادي
-        await sendOneSignalNotification(restKey, {
-          title: `حان الآن وقت صلاة ${label}`,
-          body: `دخل وقت صلاة ${label} في ${gov.name}`,
-          filters: [
-            { field: "tag", key: `gov_${gov.slug}`, relation: "=", value: "1" },
-            { field: "tag", key: "pref_prayerTimes", relation: "=", value: "1" },
-          ],
-          data: { type: "prayerTime", prayer, governorate: gov.slug },
-        });
-
-        // إشعار الأذان
-        await sendOneSignalNotification(restKey, {
-          title: `الله أكبر — حان وقت الأذان (${label})`,
-          body: "اضغط للاستماع إلى الأذان",
-          filters: [
-            { field: "tag", key: `gov_${gov.slug}`, relation: "=", value: "1" },
-            { field: "tag", key: "pref_adhan", relation: "=", value: "1" },
-          ],
-          data: { type: "adhan", prayer, governorate: gov.slug },
-        });
-      }
-    }
-  }
-);
-
-// =================================================================
-// 4) آية / حكمة يومية — دالة مجدولة الساعة 7 صباحاً بغداد
-// =================================================================
-const FALLBACK_QUOTES = [
-  "الصبر مفتاح الفرج",
-  "من صبر ظفر",
-  "خير الأعمال أدومها وإن قلّ",
-  "بالشكر تدوم النعم",
+const AR_MONTHS = [
+  "كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران",
+  "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول",
 ];
 
-exports.dailyQuote = onSchedule(
-  { schedule: "0 7 * * *", timeZone: TIMEZONE, region: REGION, secrets: [ONESIGNAL_REST_API_KEY] },
+/** تحويل الأرقام إلى هندية: 21 -> ٢١ */
+function toArabicDigits(n) {
+  return String(n).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
+}
+
+/** صياغة التاريخ بتوقيت بغداد: "٢١ تموز" */
+function formatArabicDate(date) {
+  const baghdad = new Date(date.getTime() + 3 * 60 * 60 * 1000); // UTC+3 بلا توقيت صيفي
+  return `${toArabicDigits(baghdad.getUTCDate())} ${AR_MONTHS[baghdad.getUTCMonth()]}`;
+}
+
+/** قراءة رمز الوصول المخزَّن في قاعدة البيانات */
+async function getToken() {
+  const snap = await getDatabase().ref("/ig_sync/token").get();
+  const token = snap.val();
+  if (!token) throw new Error("لا يوجد رمز وصول مخزَّن في /ig_sync/token");
+  return token;
+}
+
+/** تنزيل ملف من إنستغرام ورفعه إلى Firebase Storage بنفس صيغة الروابط الحالية */
+async function mirrorMedia(mediaUrl, isVideo, igId) {
+  const res = await fetch(mediaUrl);
+  if (!res.ok) throw new Error(`فشل تنزيل الميديا: ${res.status}`);
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const ext = isVideo ? "mp4" : "jpg";
+  const contentType = isVideo ? "video/mp4" : "image/jpeg";
+  const mediaPath = `posts/${Date.now()}_ig_${igId}.${ext}`;
+  const downloadToken = crypto.randomUUID();
+
+  const file = getStorage().bucket().file(mediaPath);
+  await file.save(buffer, {
+    metadata: {
+      contentType,
+      metadata: { firebaseStorageDownloadTokens: downloadToken },
+    },
+  });
+
+  const media =
+    `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/` +
+    `${encodeURIComponent(mediaPath)}?alt=media&token=${downloadToken}`;
+
+  console.log(`رُفعت الميديا (${Math.round(buffer.length / 1024)} كب): ${mediaPath}`);
+  return { media, mediaPath };
+}
+
+/**
+ * استخراج كل عناصر الميديا في المنشور.
+ * يعيد مصفوفة [{ url, isVideo }] — عنصر واحد للصورة أو الفيديو المفرد،
+ * وكل العناصر للمنشور متعدد الصور (الكاروسيل).
+ *
+ * يعالج ثلاث حالات كانت تُسقط المنشور سابقاً:
+ *   - الكاروسيل: لا رابط في الأصل، والعناصر تأتي ضمن children
+ *   - الفيديو قيد المعالجة عند إنستغرام: media_url يرجع فارغاً مؤقتاً
+ *   - الريلز: أحياناً ترجع بـ thumbnail_url فقط
+ */
+async function resolveAllMedia(item, token) {
+  const out = [];
+
+  // --- الكاروسيل: نأخذ كل العناصر بالترتيب ---
+  if (item.media_type === "CAROUSEL_ALBUM") {
+    let kids = (item.children && item.children.data) || null;
+
+    if (!kids) {
+      try {
+        const url =
+          `https://graph.instagram.com/v23.0/${item.id}/children` +
+          `?fields=id,media_type,media_url,thumbnail_url&access_token=${token}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        kids = json.data || null;
+      } catch (err) {
+        console.error(`تعذّر جلب عناصر الكاروسيل ${item.id}:`, err.message);
+      }
+    }
+
+    if (kids && kids.length) {
+      for (const kid of kids.slice(0, MAX_MEDIA_PER_POST)) {
+        if (kid.media_url) {
+          out.push({ url: kid.media_url, isVideo: kid.media_type === "VIDEO" });
+        } else if (kid.thumbnail_url) {
+          out.push({ url: kid.thumbnail_url, isVideo: false });
+        }
+      }
+    }
+    return out;
+  }
+
+  // --- صورة أو فيديو مفرد ---
+  if (item.media_url) {
+    out.push({ url: item.media_url, isVideo: item.media_type === "VIDEO" });
+    return out;
+  }
+
+  // فيديو بلا رابط بعد: نستعمل الصورة المصغّرة بدل إسقاط المنشور
+  if (item.thumbnail_url) {
+    console.log(`${item.id}: لا يوجد media_url، استُعملت الصورة المصغّرة.`);
+    out.push({ url: item.thumbnail_url, isVideo: false });
+  }
+
+  return out;
+}
+
+// =================================================================
+// سحب منشورات إنستغرام — كل ساعة
+// =================================================================
+exports.fetchInstagramPosts = onSchedule(
+  {
+    schedule: "every 60 minutes",
+    timeZone: "Asia/Baghdad",
+    region: REGION,
+    memory: "512MiB",
+    timeoutSeconds: 540,
+    retryCount: 0,
+  },
   async () => {
-    const snap = await db.ref("daily_quotes").once("value");
-    let quotes = [];
-    if (snap.exists()) quotes = Object.values(snap.val());
-    if (!quotes.length) quotes = FALLBACK_QUOTES;
+    const db = getDatabase();
 
-    const pick = quotes[Math.floor(Math.random() * quotes.length)];
+    let token;
+    try {
+      token = await getToken();
+    } catch (err) {
+      console.error("fetchInstagramPosts:", err.message);
+      return;
+    }
 
-    await sendOneSignalNotification(ONESIGNAL_REST_API_KEY.value(), {
-      title: "حكمة اليوم",
-      body: String(pick).slice(0, 150),
-      filters: [{ field: "tag", key: "pref_dailyVerse", relation: "=", value: "1" }],
-      data: { type: "dailyVerse" },
-    });
+    // 1) جلب آخر المنشورات من إنستغرام
+    const fields =
+      "id,caption,media_type,media_product_type,media_url,thumbnail_url," +
+      "permalink,timestamp,children{id,media_type,media_url,thumbnail_url}";
+    const url =
+      `https://graph.instagram.com/v23.0/${IG_USER_ID}/media` +
+      `?fields=${encodeURIComponent(fields)}&limit=10&access_token=${token}`;
+
+    let items;
+    try {
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json.error) {
+        console.error("خطأ من إنستغرام:", JSON.stringify(json.error));
+        return;
+      }
+      items = json.data || [];
+    } catch (err) {
+      console.error("فشل الاتصال بإنستغرام:", err.message);
+      return;
+    }
+
+    if (!items.length) {
+      console.log("لا توجد منشورات في الحساب.");
+      return;
+    }
+
+    // 2) التفعيل الأول: نعلّم كل الموجود كـ«مسحوب» بلا استيراد
+    const seenSnap = await db.ref("/ig_sync/seen").get();
+    const seen = seenSnap.val() || {};
+    const activatedSnap = await db.ref("/ig_sync/activated_at").get();
+
+    if (!activatedSnap.exists()) {
+      const initial = {};
+      for (const it of items) initial[it.id] = true;
+      await db.ref("/ig_sync").update({
+        activated_at: Date.now(),
+        seen: initial,
+      });
+      console.log(
+        `التفعيل الأول: عُلّم ${items.length} منشوراً كمقروء بلا استيراد. ` +
+          `المنشورات الجديدة فقط ستُسحب من الآن.`
+      );
+      return;
+    }
+
+    // 3) تحديد الجديد (الأقدم أولاً حتى يبقى الترتيب صحيحاً)
+    const fresh = items.filter((it) => !seen[it.id]).reverse();
+    if (!fresh.length) {
+      console.log("لا يوجد جديد.");
+      return;
+    }
+    console.log(`وُجد ${fresh.length} منشوراً جديداً.`);
+
+    // 4) قراءة المنشورات الحالية (مخزَّنة كنص JSON)
+    const postsSnap = await db.ref("/hayaa_posts").get();
+    const raw = postsSnap.val();
+    let posts = [];
+    try {
+      posts = raw ? JSON.parse(raw) : [];
+    } catch (err) {
+      console.error("تعذّر قراءة hayaa_posts، إيقاف احترازي:", err.message);
+      return;
+    }
+    if (!Array.isArray(posts)) {
+      console.error("hayaa_posts ليست مصفوفة، إيقاف احترازي.");
+      return;
+    }
+
+    // 5) تحويل كل منشور جديد ورفع ميديته
+    const attemptsSnap = await db.ref("/ig_sync/attempts").get();
+    const attempts = attemptsSnap.val() || {};
+    const attemptUpdates = {};
+
+    const seenUpdates = {};
+    let added = 0;
+
+    for (const item of fresh) {
+      try {
+        const resolvedList = await resolveAllMedia(item, token);
+        if (!resolvedList.length) {
+          const n = (attempts[item.id] || 0) + 1;
+          attemptUpdates[item.id] = n;
+
+          // نطبع تفاصيل المنشور لتشخيص السبب بدقة
+          console.log(
+            `${item.id}: لا توجد ميديا صالحة (محاولة ${n}/5) — ` +
+              JSON.stringify({
+                media_type: item.media_type,
+                media_product_type: item.media_product_type,
+                has_media_url: !!item.media_url,
+                has_thumbnail: !!item.thumbnail_url,
+                children: item.children ? (item.children.data || []).length : 0,
+              })
+          );
+
+          // نعلّمه كمقروء فقط بعد خمس محاولات فاشلة، وإلا نعيد المحاولة
+          // في الدورة القادمة (الفيديو قد يكون قيد المعالجة عند إنستغرام)
+          if (n >= 5) {
+            console.log(`${item.id}: استُنفدت المحاولات، تخطٍّ نهائي.`);
+            seenUpdates[item.id] = true;
+          }
+          continue;
+        }
+
+        // نرفع كل عناصر المنشور بالترتيب
+        const mediaItems = [];
+        for (let i = 0; i < resolvedList.length; i++) {
+          const r = resolvedList[i];
+          const { media, mediaPath } = await mirrorMedia(
+            r.url,
+            r.isVideo,
+            `${item.id}_${i}`
+          );
+          mediaItems.push({
+            url: media,
+            type: r.isVideo ? "video" : "image",
+            path: mediaPath,
+          });
+        }
+
+        posts.unshift({
+          id: String(Date.now() + added),
+          title: "منشور جديد من الهيئة",
+          body: (item.caption || "").trim(),
+          // الحقول المفردة تبقى للتوافق مع المنشورات القديمة والتطبيقات غير المحدَّثة
+          media: mediaItems[0].url,
+          mediaType: mediaItems[0].type,
+          mediaPath: mediaItems[0].path,
+          mediaItems,
+          date: formatArabicDate(new Date(item.timestamp)),
+        });
+
+        if (mediaItems.length > 1) {
+          console.log(`${item.id}: منشور متعدد — ${mediaItems.length} عنصراً.`);
+        }
+
+        seenUpdates[item.id] = true;
+        added++;
+        console.log(`أُضيف منشور إنستغرام ${item.id}`);
+      } catch (err) {
+        // لا نعلّمه كمسحوب حتى تُعاد المحاولة بالدورة القادمة
+        console.error(`فشل معالجة ${item.id}:`, err.message);
+      }
+    }
+
+    if (Object.keys(attemptUpdates).length) {
+      await db.ref("/ig_sync/attempts").update(attemptUpdates);
+    }
+
+    if (!added) {
+      if (Object.keys(seenUpdates).length) {
+        await db.ref("/ig_sync/seen").update(seenUpdates);
+      }
+      console.log("لم يُضَف أي منشور.");
+      return;
+    }
+
+    // 6) كتابة واحدة -> onNewPost يطلق إشعاراً واحداً
+    await db.ref("/hayaa_posts").set(JSON.stringify(posts));
+    await db.ref("/ig_sync/seen").update(seenUpdates);
+    await db.ref("/ig_sync/last_run").set(Date.now());
+
+    console.log(`تمت المزامنة: ${added} منشور. المجموع الآن ${posts.length}.`);
   }
 );
 
 // =================================================================
-// دالة الاشتراك — يستدعيها التطبيق عند تفعيل/تعديل تفضيلات الإشعارات
-// تستقبل playerId (معرّف اشتراك OneSignal من المتصفح) بدل token الـ FCM
+// تجديد رمز الوصول — كل 30 يوماً
 // =================================================================
-exports.updateNotificationSubscriptions = onCall(
-  { region: REGION, secrets: [ONESIGNAL_REST_API_KEY] },
-  async (request) => {
-    const { playerId, governorate, prefs } = request.data || {};
-    if (!playerId) throw new HttpsError("invalid-argument", "playerId مفقود");
+exports.refreshInstagramToken = onSchedule(
+  {
+    schedule: "0 3 1 * *", // الساعة 3 فجراً من أول كل شهر
+    timeZone: "Asia/Baghdad",
+    region: REGION,
+    retryCount: 1,
+  },
+  async () => {
+    const db = getDatabase();
 
-    const validGov = GOVERNORATES.some((g) => g.slug === governorate);
-    if (governorate && !validGov) {
-      throw new HttpsError("invalid-argument", "محافظة غير معروفة");
-    }
-
-    // ابنِ كائن tags: قيمة "1" للتفعيل، وقيمة فارغة "" لإلغاء التفعيل
-    const tags = {};
-    for (const gov of GOVERNORATES) {
-      tags[`gov_${gov.slug}`] = gov.slug === governorate ? "1" : "";
-    }
-    for (const key of PREF_KEYS) {
-      tags[`pref_${key}`] = prefs && prefs[key] ? "1" : "";
+    let token;
+    try {
+      token = await getToken();
+    } catch (err) {
+      console.error("refreshInstagramToken:", err.message);
+      return;
     }
 
     try {
-      const res = await fetch(`https://onesignal.com/api/v1/players/${playerId}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          Authorization: `Basic ${ONESIGNAL_REST_API_KEY.value()}`,
-        },
-        body: JSON.stringify({ app_id: ONESIGNAL_APP_ID, tags }),
-      });
+      const url =
+        "https://graph.instagram.com/refresh_access_token" +
+        `?grant_type=ig_refresh_token&access_token=${token}`;
+      const res = await fetch(url);
       const json = await res.json();
-      console.log("نتيجة تحديث tags:", JSON.stringify(json));
 
-      await db.ref(`push_tokens/${playerId}`).set({
-        governorate: governorate || null,
-        prefs: prefs || {},
-        updatedAt: Date.now(),
+      if (json.error || !json.access_token) {
+        console.error("فشل التجديد:", JSON.stringify(json.error || json));
+        return;
+      }
+
+      await db.ref("/ig_sync").update({
+        token: json.access_token,
+        token_refreshed_at: Date.now(),
+        token_expires_in_days: Math.round((json.expires_in || 0) / 86400),
       });
 
-      return { success: true };
+      console.log(
+        `جُدّد الرمز بنجاح — صالح ${Math.round((json.expires_in || 0) / 86400)} يوماً.`
+      );
     } catch (err) {
-      console.error("فشل تحديث OneSignal tags:", err.message);
-      throw new HttpsError("internal", "فشل تحديث الاشتراك");
+      console.error("خطأ اتصال أثناء التجديد:", err.message);
     }
   }
 );
+// ===== الإشعارات اليومية المجدولة =====
+exports.scheduleDailyNotifications =
+  require("./dailyNotifications").scheduleDailyNotifications;
